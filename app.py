@@ -4,9 +4,7 @@ import re
 import io
 import os
 from datetime import date
-from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-from openpyxl.cell import WriteOnlyCell
+import xlsxwriter
 
 app = Flask(__name__)
 
@@ -224,59 +222,63 @@ def processar():
             status_idx = i
             break
 
-    hfont = Font(name='Arial', bold=True, color='FFFFFF', size=10)
-    hfill = PatternFill('solid', fgColor='2F5496')
-    halign = Alignment(horizontal='center', vertical='center', wrap_text=True)
-    cfont = Font(name='Arial', size=10)
-    calign = Alignment(vertical='center')
-    brd = Border(
-        left=Side(style='thin', color='D9D9D9'),
-        right=Side(style='thin', color='D9D9D9'),
-        top=Side(style='thin', color='D9D9D9'),
-        bottom=Side(style='thin', color='D9D9D9')
-    )
-    green = PatternFill('solid', fgColor='C6EFCE')
-    red = PatternFill('solid', fgColor='FFC7CE')
-
-    wb = Workbook(write_only=True)
-    ws = wb.create_sheet("Vendas")
-
-    hcells = []
-    for h in headers:
-        c = WriteOnlyCell(ws, value=h)
-        c.font = hfont
-        c.fill = hfill
-        c.alignment = halign
-        c.border = brd
-        hcells.append(c)
-    ws.append(hcells)
-
-    for raw_row in reader:
-        row = [CLEAN_RE.sub('', raw_row[i]) if i < len(raw_row) else '' for i in keep_indices]
-
-        fill = None
-        if status_idx is not None:
-            st = row[status_idx].strip().lower()
-            if st == 'aprovada':
-                fill = green
-            elif st in ('chargeback', 'med', 'estornada'):
-                fill = red
-
-        cells = []
-        for val in row:
-            c = WriteOnlyCell(ws, value=val)
-            c.font = cfont
-            c.alignment = calign
-            c.border = brd
-            if fill:
-                c.fill = fill
-            cells.append(c)
-        ws.append(cells)
-
     today = date.today()
     filename = f"kirvano_{today.day:02d}-{today.month:02d}-{today.year}.xlsx"
     output_path = f'/tmp/{filename}'
-    wb.save(output_path)
+
+    wb = xlsxwriter.Workbook(output_path, {'constant_memory': True})
+    ws = wb.add_worksheet('Vendas')
+
+    # Estilos
+    hfmt = wb.add_format({
+        'font_name': 'Arial', 'font_size': 10, 'bold': True,
+        'font_color': '#FFFFFF', 'bg_color': '#2F5496',
+        'align': 'center', 'valign': 'vcenter', 'text_wrap': True,
+        'border': 1, 'border_color': '#D9D9D9'
+    })
+    cfmt = wb.add_format({
+        'font_name': 'Arial', 'font_size': 10,
+        'valign': 'vcenter',
+        'border': 1, 'border_color': '#D9D9D9'
+    })
+    green_fmt = wb.add_format({
+        'font_name': 'Arial', 'font_size': 10,
+        'valign': 'vcenter', 'bg_color': '#C6EFCE',
+        'border': 1, 'border_color': '#D9D9D9'
+    })
+    red_fmt = wb.add_format({
+        'font_name': 'Arial', 'font_size': 10,
+        'valign': 'vcenter', 'bg_color': '#FFC7CE',
+        'border': 1, 'border_color': '#D9D9D9'
+    })
+
+    # Header
+    for col, h in enumerate(headers):
+        ws.write(0, col, h, hfmt)
+
+    # Largura das colunas
+    for col, h in enumerate(headers):
+        ws.set_column(col, col, min(len(h) + 5, 40))
+
+    # Dados
+    row_num = 1
+    for raw_row in reader:
+        row = [CLEAN_RE.sub('', raw_row[i]) if i < len(raw_row) else '' for i in keep_indices]
+
+        fmt = cfmt
+        if status_idx is not None:
+            st = row[status_idx].strip().lower()
+            if st == 'aprovada':
+                fmt = green_fmt
+            elif st in ('chargeback', 'med', 'estornada'):
+                fmt = red_fmt
+
+        for col, val in enumerate(row):
+            ws.write(row_num, col, val, fmt)
+
+        row_num += 1
+
+    wb.close()
 
     response = send_file(output_path, as_attachment=True, download_name=filename)
     response.headers['X-Filename'] = filename
