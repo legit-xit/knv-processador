@@ -222,7 +222,11 @@
                 const CHUNK = 5000;
                 for (let i = 1; i < allRows.length; i++) {
                     const rawRow = allRows[i];
-                    const row = keepIndices.map(idx => (rawRow[idx] || '').trim());
+                    const row = keepIndices.map(idx => {
+                        let v = (rawRow[idx] || '').trim();
+                        if (v.length > 32000) v = v.substring(0, 32000);
+                        return v;
+                    });
 
                     const excelRow = ws.addRow(row);
 
