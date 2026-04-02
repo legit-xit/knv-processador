@@ -1,6 +1,7 @@
 from flask import Flask, request, send_file, render_template_string
-import pandas as pd
+import csv
 import re
+import io
 import os
 from datetime import date
 from openpyxl import Workbook
@@ -15,7 +16,7 @@ HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KNV Processador</title>
+    <title>Kirvano Processador</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -91,7 +92,7 @@ HTML = """
 </head>
 <body>
     <div class="container">
-        <h1>KNV Processador</h1>
+        <h1>Kirvano Processador</h1>
         <p class="sub">Joga o CSV bruto e baixa o .xlsx pronto</p>
 
         <div class="upload-area" id="dropZone" onclick="document.getElementById('fileInput').click()">
@@ -158,15 +159,15 @@ HTML = """
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = res.headers.get('X-Filename') || 'KNV.xlsx';
+                a.download = res.headers.get('X-Filename') || 'kirvano.xlsx';
                 a.click();
                 URL.revokeObjectURL(url);
 
-                status.textContent = '✅ Pronto! Download iniciado.';
+                status.textContent = 'Pronto! Download iniciado.';
                 status.className = 'status';
                 status.style.display = 'block';
             } catch (err) {
-                status.textContent = '❌ Erro: ' + err.message;
+                status.textContent = 'Erro: ' + err.message;
                 status.className = 'status error';
                 status.style.display = 'block';
             }
@@ -178,6 +179,18 @@ HTML = """
 </body>
 </html>
 """
+
+COLS_TO_DROP = {
+    'Comissão', 'Desconto (Valor)', 'Desconto (Automático)', 'Taxas',
+    'Parcelamento sem juros', 'Cliente (IP)', 'Cliente (CEP)',
+    'Cliente (Logradouro)', 'Cliente (Número)', 'Cliente (Complemento)',
+    'Cliente (Bairro)', 'Cliente (Cidade)', 'Cliente (Estado)',
+    'Cliente (País)', 'Afiliado (Nome)', 'Afiliado (E-mail)',
+    'UTM SRC', 'UTM Source', 'UTM Medium', 'UTM Campaign',
+    'UTM Term', 'UTM Content'
+}
+
+CLEAN_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
 
 
 @app.route('/')
@@ -193,41 +206,30 @@ def processar():
     file = request.files['file']
 
     try:
-        df = pd.read_csv(file, sep=';', encoding='latin1', dtype=str, low_memory=False)
+        raw = file.read().decode('latin1')
     except Exception:
-        try:
-            file.seek(0)
-            df = pd.read_csv(file, sep=';', encoding='utf-8', dtype=str, low_memory=False)
-        except Exception as e:
-            return f'Erro ao ler CSV: {e}', 400
+        file.seek(0)
+        raw = file.read().decode('utf-8')
 
-    def clean(val):
-        if pd.isna(val):
-            return ''
-        return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', str(val))
+    reader = csv.reader(io.StringIO(raw), delimiter=';')
+    all_headers = next(reader)
 
-    df = df.map(clean)
+    keep = [(i, h) for i, h in enumerate(all_headers) if h not in COLS_TO_DROP]
+    keep_indices = [i for i, _ in keep]
+    headers = [h for _, h in keep]
 
-    cols_to_drop = [
-        'Comissão', 'Desconto (Valor)', 'Desconto (Automático)', 'Taxas',
-        'Parcelamento sem juros', 'Cliente (IP)', 'Cliente (CEP)',
-        'Cliente (Logradouro)', 'Cliente (Número)', 'Cliente (Complemento)',
-        'Cliente (Bairro)', 'Cliente (Cidade)', 'Cliente (Estado)',
-        'Cliente (País)', 'Afiliado (Nome)', 'Afiliado (E-mail)',
-        'UTM SRC', 'UTM Source', 'UTM Medium', 'UTM Campaign',
-        'UTM Term', 'UTM Content'
-    ]
-    df = df.drop(columns=[c for c in cols_to_drop if c in df.columns])
+    status_idx = None
+    for i, h in enumerate(headers):
+        if h == 'Status':
+            status_idx = i
+            break
 
-    today = date.today()
-    filename = f"kirvano_{today.day:02d}-{today.month:02d}-{today.year}.xlsx"
-
-    header_font = Font(name='Arial', bold=True, color='FFFFFF', size=10)
-    header_fill = PatternFill('solid', fgColor='2F5496')
-    header_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
-    cell_font = Font(name='Arial', size=10)
-    cell_align = Alignment(vertical='center')
-    thin_border = Border(
+    hfont = Font(name='Arial', bold=True, color='FFFFFF', size=10)
+    hfill = PatternFill('solid', fgColor='2F5496')
+    halign = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    cfont = Font(name='Arial', size=10)
+    calign = Alignment(vertical='center')
+    brd = Border(
         left=Side(style='thin', color='D9D9D9'),
         right=Side(style='thin', color='D9D9D9'),
         top=Side(style='thin', color='D9D9D9'),
@@ -239,39 +241,40 @@ def processar():
     wb = Workbook(write_only=True)
     ws = wb.create_sheet("Vendas")
 
-    headers = list(df.columns)
-    status_idx = headers.index('Status') if 'Status' in headers else None
-
-    h_cells = []
+    hcells = []
     for h in headers:
         c = WriteOnlyCell(ws, value=h)
-        c.font = header_font
-        c.fill = header_fill
-        c.alignment = header_align
-        c.border = thin_border
-        h_cells.append(c)
-    ws.append(h_cells)
+        c.font = hfont
+        c.fill = hfill
+        c.alignment = halign
+        c.border = brd
+        hcells.append(c)
+    ws.append(hcells)
 
-    for row in df.itertuples(index=False):
+    for raw_row in reader:
+        row = [CLEAN_RE.sub('', raw_row[i]) if i < len(raw_row) else '' for i in keep_indices]
+
         fill = None
         if status_idx is not None:
-            status = str(row[status_idx]).strip().lower()
-            if status == 'aprovada':
+            st = row[status_idx].strip().lower()
+            if st == 'aprovada':
                 fill = green
-            elif status in ('chargeback', 'med', 'estornada'):
+            elif st in ('chargeback', 'med', 'estornada'):
                 fill = red
 
         cells = []
         for val in row:
             c = WriteOnlyCell(ws, value=val)
-            c.font = cell_font
-            c.alignment = cell_align
-            c.border = thin_border
+            c.font = cfont
+            c.alignment = calign
+            c.border = brd
             if fill:
                 c.fill = fill
             cells.append(c)
         ws.append(cells)
 
+    today = date.today()
+    filename = f"kirvano_{today.day:02d}-{today.month:02d}-{today.year}.xlsx"
     output_path = f'/tmp/{filename}'
     wb.save(output_path)
 
