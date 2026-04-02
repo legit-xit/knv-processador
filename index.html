@@ -136,33 +136,72 @@
         }
 
         function parseCSV(text) {
-            const rows = [];
-            let current = '';
-            let inQuotes = false;
-            let row = [];
+            // Normalizar quebras de linha
+            text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
-            for (let i = 0; i < text.length; i++) {
-                const ch = text[i];
-                if (inQuotes) {
-                    if (ch === '"') {
-                        if (i + 1 < text.length && text[i + 1] === '"') { current += '"'; i++; }
-                        else { inQuotes = false; }
-                    } else { current += ch; }
-                } else {
-                    if (ch === '"') { inQuotes = true; }
-                    else if (ch === ';') { row.push(current); current = ''; }
-                    else if (ch === '\n' || (ch === '\r' && text[i + 1] === '\n')) {
-                        row.push(current); current = '';
-                        if (row.length > 1) rows.push(row);
-                        row = [];
-                        if (ch === '\r') i++;
+            const rows = [];
+            const len = text.length;
+            let i = 0;
+
+            while (i < len) {
+                const row = [];
+                // Parse uma linha
+                while (i < len) {
+                    if (text[i] === '"') {
+                        // Campo entre aspas
+                        i++; // pula a aspa de abertura
+                        let val = '';
+                        while (i < len) {
+                            if (text[i] === '"') {
+                                if (i + 1 < len && text[i + 1] === '"') {
+                                    val += '"';
+                                    i += 2;
+                                } else {
+                                    i++; // pula a aspa de fechamento
+                                    break;
+                                }
+                            } else {
+                                // Filtrar chars ilegais pro Excel
+                                const code = text.charCodeAt(i);
+                                if (code > 31 || code === 9 || code === 10 || code === 13) {
+                                    val += text[i];
+                                }
+                                i++;
+                            }
+                        }
+                        // Truncar pra limite do Excel
+                        if (val.length > 32000) val = val.substring(0, 32000);
+                        row.push(val);
+                        // Pular delimitador ou newline
+                        if (i < len && text[i] === ';') { i++; }
+                        else if (i < len && text[i] === '\n') { i++; break; }
+                        else { break; }
+                    } else if (text[i] === ';') {
+                        row.push('');
+                        i++;
+                    } else if (text[i] === '\n') {
+                        row.push('');
+                        i++;
+                        break;
                     } else {
-                        const code = ch.charCodeAt(0);
-                        if (code > 8 && code !== 11 && code !== 12 && (code < 14 || code > 31)) { current += ch; }
+                        // Campo sem aspas
+                        let val = '';
+                        while (i < len && text[i] !== ';' && text[i] !== '\n') {
+                            const code = text.charCodeAt(i);
+                            if (code > 31 || code === 9) {
+                                val += text[i];
+                            }
+                            i++;
+                        }
+                        if (val.length > 32000) val = val.substring(0, 32000);
+                        row.push(val);
+                        if (i < len && text[i] === ';') { i++; }
+                        else if (i < len && text[i] === '\n') { i++; break; }
+                        else { break; }
                     }
                 }
+                if (row.length > 1) rows.push(row);
             }
-            if (current || row.length) { row.push(current); if (row.length > 1) rows.push(row); }
             return rows;
         }
 
