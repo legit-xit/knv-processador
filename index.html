@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kirvano Processador</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -77,6 +77,22 @@
         .success { color: #22c55e; }
         .error { color: #ef4444; }
         .processing { color: #a5b4fc; }
+        .progress-bar {
+            margin-top: 0.75rem;
+            width: 100%;
+            height: 6px;
+            background: #222;
+            border-radius: 3px;
+            overflow: hidden;
+            display: none;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            width: 0%;
+            transition: width 0.3s;
+            border-radius: 3px;
+        }
     </style>
 </head>
 <body>
@@ -93,40 +109,43 @@
         <div class="file-name" id="fileName"></div>
         <input type="file" id="fileInput" accept=".csv">
         <button class="btn" id="processBtn" onclick="processar()">Processar e Baixar</button>
+        <div class="progress-bar" id="progressBar"><div class="progress-fill" id="progressFill"></div></div>
         <div class="status" id="status"></div>
     </div>
 
     <script>
-        const dropZone = document.getElementById('dropZone');
-        const fileInput = document.getElementById('fileInput');
-        const fileName = document.getElementById('fileName');
-        const processBtn = document.getElementById('processBtn');
-        const statusEl = document.getElementById('status');
+        var dropZone = document.getElementById('dropZone');
+        var fileInput = document.getElementById('fileInput');
+        var fileName = document.getElementById('fileName');
+        var processBtn = document.getElementById('processBtn');
+        var statusEl = document.getElementById('status');
+        var progressBar = document.getElementById('progressBar');
+        var progressFill = document.getElementById('progressFill');
 
-        const COLS_TO_DROP = new Set([
-            'Comissão', 'Desconto (Valor)', 'Desconto (Automático)', 'Taxas',
-            'Parcelamento sem juros', 'Cliente (IP)', 'Cliente (CEP)',
-            'Cliente (Logradouro)', 'Cliente (Número)', 'Cliente (Complemento)',
-            'Cliente (Bairro)', 'Cliente (Cidade)', 'Cliente (Estado)',
-            'Cliente (País)', 'Afiliado (Nome)', 'Afiliado (E-mail)',
-            'UTM SRC', 'UTM Source', 'UTM Medium', 'UTM Campaign',
-            'UTM Term', 'UTM Content'
-        ]);
+        var COLS_TO_DROP = {};
+        ['Comissão','Desconto (Valor)','Desconto (Automático)','Taxas',
+        'Parcelamento sem juros','Cliente (IP)','Cliente (CEP)',
+        'Cliente (Logradouro)','Cliente (Número)','Cliente (Complemento)',
+        'Cliente (Bairro)','Cliente (Cidade)','Cliente (Estado)',
+        'Cliente (País)','Afiliado (Nome)','Afiliado (E-mail)',
+        'UTM SRC','UTM Source','UTM Medium','UTM Campaign',
+        'UTM Term','UTM Content'].forEach(function(c) { COLS_TO_DROP[c] = true; });
 
-        dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
-        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-        dropZone.addEventListener('drop', e => {
+        dropZone.addEventListener('dragover', function(e) { e.preventDefault(); dropZone.classList.add('dragover'); });
+        dropZone.addEventListener('dragleave', function() { dropZone.classList.remove('dragover'); });
+        dropZone.addEventListener('drop', function(e) {
             e.preventDefault();
             dropZone.classList.remove('dragover');
             if (e.dataTransfer.files[0]) { fileInput.files = e.dataTransfer.files; mostrarArquivo(e.dataTransfer.files[0]); }
         });
-        fileInput.addEventListener('change', () => { if (fileInput.files[0]) mostrarArquivo(fileInput.files[0]); });
+        fileInput.addEventListener('change', function() { if (fileInput.files[0]) mostrarArquivo(fileInput.files[0]); });
 
         function mostrarArquivo(file) {
             fileName.textContent = file.name + ' (' + (file.size / 1024 / 1024).toFixed(1) + ' MB)';
             fileName.style.display = 'block';
             processBtn.style.display = 'block';
             statusEl.style.display = 'none';
+            progressBar.style.display = 'none';
         }
 
         function setStatus(msg, type) {
@@ -135,47 +154,39 @@
             statusEl.style.display = 'block';
         }
 
-        function parseCSV(text) {
-            // Normalizar quebras de linha
-            text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        function setProgress(pct) {
+            progressBar.style.display = 'block';
+            progressFill.style.width = pct + '%';
+        }
 
-            const rows = [];
-            const len = text.length;
-            let i = 0;
+        // ============ CSV PARSER ============
+        function parseCSV(text) {
+            text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+            var rows = [];
+            var len = text.length;
+            var i = 0;
 
             while (i < len) {
-                const row = [];
-                // Parse uma linha
+                var row = [];
                 while (i < len) {
                     if (text[i] === '"') {
-                        // Campo entre aspas
-                        i++; // pula a aspa de abertura
-                        let val = '';
+                        i++;
+                        var val = '';
                         while (i < len) {
                             if (text[i] === '"') {
-                                if (i + 1 < len && text[i + 1] === '"') {
-                                    val += '"';
-                                    i += 2;
-                                } else {
-                                    i++; // pula a aspa de fechamento
-                                    break;
-                                }
+                                if (i + 1 < len && text[i + 1] === '"') { val += '"'; i += 2; }
+                                else { i++; break; }
                             } else {
-                                // Filtrar chars ilegais pro Excel
-                                const code = text.charCodeAt(i);
-                                if (code > 31 || code === 9 || code === 10 || code === 13) {
-                                    val += text[i];
-                                }
+                                var code = text.charCodeAt(i);
+                                if (code > 31 || code === 9 || code === 10 || code === 13) val += text[i];
                                 i++;
                             }
                         }
-                        // Truncar pra limite do Excel
                         if (val.length > 32000) val = val.substring(0, 32000);
                         row.push(val);
-                        // Pular delimitador ou newline
-                        if (i < len && text[i] === ';') { i++; }
+                        if (i < len && text[i] === ';') i++;
                         else if (i < len && text[i] === '\n') { i++; break; }
-                        else { break; }
+                        else break;
                     } else if (text[i] === ';') {
                         row.push('');
                         i++;
@@ -184,20 +195,17 @@
                         i++;
                         break;
                     } else {
-                        // Campo sem aspas
-                        let val = '';
+                        var val2 = '';
                         while (i < len && text[i] !== ';' && text[i] !== '\n') {
-                            const code = text.charCodeAt(i);
-                            if (code > 31 || code === 9) {
-                                val += text[i];
-                            }
+                            var code2 = text.charCodeAt(i);
+                            if (code2 > 31 || code2 === 9) val2 += text[i];
                             i++;
                         }
-                        if (val.length > 32000) val = val.substring(0, 32000);
-                        row.push(val);
-                        if (i < len && text[i] === ';') { i++; }
+                        if (val2.length > 32000) val2 = val2.substring(0, 32000);
+                        row.push(val2);
+                        if (i < len && text[i] === ';') i++;
                         else if (i < len && text[i] === '\n') { i++; break; }
-                        else { break; }
+                        else break;
                     }
                 }
                 if (row.length > 1) rows.push(row);
@@ -205,128 +213,252 @@
             return rows;
         }
 
+        // ============ XML HELPERS ============
+        function escXml(str) {
+            if (!str) return '';
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        function colRef(c) {
+            var s = '';
+            c++;
+            while (c > 0) { c--; s = String.fromCharCode(65 + (c % 26)) + s; c = Math.floor(c / 26); }
+            return s;
+        }
+
+        // ============ PROCESSAR ============
         async function processar() {
-            const file = fileInput.files[0];
+            var file = fileInput.files[0];
             if (!file) return;
 
             processBtn.disabled = true;
             processBtn.textContent = 'Processando...';
             setStatus('Lendo arquivo...', 'processing');
-
-            // Usar setTimeout pra dar tempo da UI atualizar
-            await new Promise(r => setTimeout(r, 50));
+            setProgress(0);
+            await new Promise(function(r) { setTimeout(r, 50); });
 
             try {
-                const buffer = await file.arrayBuffer();
-                const text = new TextDecoder('latin1').decode(buffer);
+                var buffer = await file.arrayBuffer();
+                var text = new TextDecoder('latin1').decode(buffer);
 
                 setStatus('Parseando CSV...', 'processing');
-                await new Promise(r => setTimeout(r, 50));
+                setProgress(10);
+                await new Promise(function(r) { setTimeout(r, 50); });
 
-                const allRows = parseCSV(text);
+                var allRows = parseCSV(text);
+                // Liberar memória do texto bruto
+                text = null;
+                buffer = null;
+
                 if (allRows.length < 2) throw new Error('CSV vazio ou inválido');
 
-                const allHeaders = allRows[0];
-                const keepIndices = [];
-                const headers = [];
-                for (let i = 0; i < allHeaders.length; i++) {
-                    const h = allHeaders[i].trim();
-                    if (!COLS_TO_DROP.has(h)) { keepIndices.push(i); headers.push(h); }
+                var allHeaders = allRows[0];
+                var keepIndices = [];
+                var headers = [];
+                for (var i = 0; i < allHeaders.length; i++) {
+                    var h = allHeaders[i].trim();
+                    if (!COLS_TO_DROP[h]) { keepIndices.push(i); headers.push(h); }
                 }
 
-                const statusIdx = headers.indexOf('Status');
+                var statusIdx = headers.indexOf('Status');
+                var numCols = headers.length;
+                var totalRows = allRows.length - 1;
 
-                setStatus('Gerando planilha (' + (allRows.length - 1).toLocaleString() + ' linhas)...', 'processing');
-                await new Promise(r => setTimeout(r, 50));
+                setStatus('Gerando planilha (' + totalRows.toLocaleString() + ' linhas)...', 'processing');
+                setProgress(20);
+                await new Promise(function(r) { setTimeout(r, 50); });
 
-                // Criar workbook com ExcelJS
-                const wb = new ExcelJS.Workbook();
-                const ws = wb.addWorksheet('Vendas');
+                // ============ GERAR XLSX COMO XML+ZIP ============
 
-                // Header
-                const headerRow = ws.addRow(headers);
-                headerRow.eachCell(cell => {
-                    cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
-                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2F5496' } };
-                    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-                    cell.border = {
-                        top: { style: 'thin', color: { argb: 'FFD9D9D9' } },
-                        bottom: { style: 'thin', color: { argb: 'FFD9D9D9' } },
-                        left: { style: 'thin', color: { argb: 'FFD9D9D9' } },
-                        right: { style: 'thin', color: { argb: 'FFD9D9D9' } }
-                    };
-                });
+                // styles.xml
+                var styles = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+                    '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+                    '<fonts count="2">' +
+                    '<font><sz val="10"/><name val="Arial"/></font>' +
+                    '<font><sz val="10"/><name val="Arial"/><b/><color rgb="FFFFFFFF"/></font>' +
+                    '</fonts>' +
+                    '<fills count="5">' +
+                    '<fill><patternFill patternType="none"/></fill>' +
+                    '<fill><patternFill patternType="gray125"/></fill>' +
+                    '<fill><patternFill patternType="solid"><fgColor rgb="FF2F5496"/></patternFill></fill>' +
+                    '<fill><patternFill patternType="solid"><fgColor rgb="FFC6EFCE"/></patternFill></fill>' +
+                    '<fill><patternFill patternType="solid"><fgColor rgb="FFFFC7CE"/></patternFill></fill>' +
+                    '</fills>' +
+                    '<borders count="2">' +
+                    '<border><left/><right/><top/><bottom/><diagonal/></border>' +
+                    '<border>' +
+                    '<left style="thin"><color rgb="FFD9D9D9"/></left>' +
+                    '<right style="thin"><color rgb="FFD9D9D9"/></right>' +
+                    '<top style="thin"><color rgb="FFD9D9D9"/></top>' +
+                    '<bottom style="thin"><color rgb="FFD9D9D9"/></bottom>' +
+                    '<diagonal/></border>' +
+                    '</borders>' +
+                    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+                    '<cellXfs count="4">' +
+                    '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>' +
+                    '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>' +
+                    '<xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>' +
+                    '<xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>' +
+                    '</cellXfs>' +
+                    '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
+                    '</styleSheet>';
 
-                // Processar em blocos pra não travar a UI
-                const CHUNK = 5000;
-                for (let i = 1; i < allRows.length; i++) {
-                    const rawRow = allRows[i];
-                    const row = keepIndices.map(idx => {
-                        let v = (rawRow[idx] || '').trim();
-                        if (v.length > 32000) v = v.substring(0, 32000);
-                        return v;
-                    });
+                // Colunas
+                var colsXml = '<cols>';
+                for (var c = 0; c < numCols; c++) {
+                    var w = Math.min(headers[c].length + 5, 40);
+                    colsXml += '<col min="' + (c+1) + '" max="' + (c+1) + '" width="' + w + '" customWidth="1"/>';
+                }
+                colsXml += '</cols>';
 
-                    const excelRow = ws.addRow(row);
+                // Pre-calcular referências de colunas
+                var colRefs = [];
+                for (var c = 0; c < numCols; c++) colRefs.push(colRef(c));
 
-                    // Determinar cor
-                    let fillColor = null;
-                    if (statusIdx >= 0) {
-                        const st = row[statusIdx].toLowerCase();
-                        if (st === 'aprovada') fillColor = 'FFC6EFCE';
-                        else if (st === 'chargeback' || st === 'med' || st === 'estornada') fillColor = 'FFFFC7CE';
-                    }
+                // Sheet XML em blocos pra não estourar memória
+                var sheetParts = [];
+                sheetParts.push('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+                    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+                    '<sheetViews><sheetView tabSelected="1" workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' +
+                    colsXml + '<sheetData>');
 
-                    excelRow.eachCell({ includeEmpty: true }, cell => {
-                        cell.font = { name: 'Arial', size: 10 };
-                        cell.alignment = { vertical: 'middle' };
-                        cell.border = {
-                            top: { style: 'thin', color: { argb: 'FFD9D9D9' } },
-                            bottom: { style: 'thin', color: { argb: 'FFD9D9D9' } },
-                            left: { style: 'thin', color: { argb: 'FFD9D9D9' } },
-                            right: { style: 'thin', color: { argb: 'FFD9D9D9' } }
-                        };
-                        if (fillColor) {
-                            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fillColor } };
+                // Header row
+                var hr = '<row r="1">';
+                for (var c = 0; c < numCols; c++) {
+                    hr += '<c r="' + colRefs[c] + '1" t="inlineStr" s="1"><is><t>' + escXml(headers[c]) + '</t></is></c>';
+                }
+                hr += '</row>';
+                sheetParts.push(hr);
+
+                // Data rows em blocos de 5000
+                var CHUNK = 5000;
+                for (var start = 1; start < allRows.length; start += CHUNK) {
+                    var end = Math.min(start + CHUNK, allRows.length);
+                    var block = '';
+
+                    for (var r = start; r < end; r++) {
+                        var rawRow = allRows[r];
+                        var rowNum = r + 1;
+                        var sid = '0';
+
+                        // Filtrar colunas e determinar estilo
+                        block += '<row r="' + rowNum + '">';
+                        var stVal = '';
+                        for (var c = 0; c < keepIndices.length; c++) {
+                            var idx = keepIndices[c];
+                            var v = (rawRow[idx] || '').trim();
+                            if (v.length > 32000) v = v.substring(0, 32000);
+                            if (c === statusIdx) stVal = v.toLowerCase();
                         }
-                    });
 
-                    // Dar respiro pra UI a cada bloco
-                    if (i % CHUNK === 0) {
-                        setStatus('Processando... ' + Math.round(i / (allRows.length - 1) * 100) + '%', 'processing');
-                        await new Promise(r => setTimeout(r, 10));
+                        if (statusIdx >= 0) {
+                            if (stVal === 'aprovada') sid = '2';
+                            else if (stVal === 'chargeback' || stVal === 'med' || stVal === 'estornada') sid = '3';
+                        }
+
+                        // Resetar e escrever células
+                        block = block.slice(0, block.lastIndexOf('<row'));
+                        block += '<row r="' + rowNum + '">';
+                        for (var c = 0; c < keepIndices.length; c++) {
+                            var idx = keepIndices[c];
+                            var v = (rawRow[idx] || '').trim();
+                            if (v.length > 32000) v = v.substring(0, 32000);
+                            block += '<c r="' + colRefs[c] + rowNum + '" t="inlineStr" s="' + sid + '"><is><t>' + escXml(v) + '</t></is></c>';
+                        }
+                        block += '</row>';
                     }
+
+                    sheetParts.push(block);
+
+                    // Atualizar progresso
+                    var pct = 20 + Math.round((end / allRows.length) * 60);
+                    setStatus('Gerando... ' + Math.round((end - 1) / totalRows * 100) + '%', 'processing');
+                    setProgress(pct);
+                    await new Promise(function(r) { setTimeout(r, 10); });
                 }
 
-                // Largura das colunas
-                ws.columns.forEach((col, i) => {
-                    col.width = Math.min(headers[i].length + 5, 40);
-                });
+                // Liberar memória
+                allRows = null;
 
-                // Filtro e freeze
-                ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: allRows.length, column: headers.length } };
-                ws.views = [{ state: 'frozen', ySplit: 1 }];
+                var lastCol = colRefs[numCols - 1];
+                var lastRow = totalRows + 1;
+                sheetParts.push('</sheetData>');
+                sheetParts.push('<autoFilter ref="A1:' + lastCol + lastRow + '"/>');
+                sheetParts.push('</worksheet>');
+
+                var sheetXml = sheetParts.join('');
+                sheetParts = null;
+
+                setStatus('Compactando arquivo...', 'processing');
+                setProgress(85);
+                await new Promise(function(r) { setTimeout(r, 50); });
+
+                // Montar ZIP
+                var workbook = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+                    '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+                    '<sheets><sheet name="Vendas" sheetId="1" r:id="rId1"/></sheets></workbook>';
+
+                var rels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+                    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+                    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' +
+                    '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
+                    '</Relationships>';
+
+                var rootRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+                    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+                    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>' +
+                    '</Relationships>';
+
+                var contentTypes = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+                    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+                    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+                    '<Default Extension="xml" ContentType="application/xml"/>' +
+                    '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+                    '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+                    '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
+                    '</Types>';
+
+                var zip = new JSZip();
+                zip.file('_rels/.rels', rootRels);
+                zip.file('[Content_Types].xml', contentTypes);
+                zip.file('xl/workbook.xml', workbook);
+                zip.file('xl/_rels/workbook.xml.rels', rels);
+                zip.file('xl/styles.xml', styles);
+                zip.file('xl/worksheets/sheet1.xml', sheetXml);
+
+                // Liberar memória
+                sheetXml = null;
 
                 setStatus('Finalizando download...', 'processing');
-                await new Promise(r => setTimeout(r, 50));
+                setProgress(95);
 
-                // Gerar e baixar
-                const today = new Date();
-                const dd = String(today.getDate()).padStart(2, '0');
-                const mm = String(today.getMonth() + 1).padStart(2, '0');
-                const yyyy = today.getFullYear();
-                const filename = `kirvano_${dd}-${mm}-${yyyy}.xlsx`;
+                var blob = await zip.generateAsync({
+                    type: 'blob',
+                    mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    compression: 'DEFLATE',
+                    compressionOptions: { level: 3 }
+                });
 
-                const buf = await wb.xlsx.writeBuffer();
-                const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
+                // Nome do arquivo
+                var today = new Date();
+                var dd = ('0' + today.getDate()).slice(-2);
+                var mm = ('0' + (today.getMonth() + 1)).slice(-2);
+                var yyyy = today.getFullYear();
+                var fnome = 'kirvano_' + dd + '-' + mm + '-' + yyyy + '.xlsx';
+
+                // Download
+                var url = URL.createObjectURL(blob);
+                var a = document.createElement('a');
                 a.href = url;
-                a.download = filename;
+                a.download = fnome;
+                document.body.appendChild(a);
                 a.click();
+                document.body.removeChild(a);
                 URL.revokeObjectURL(url);
 
                 setStatus('Pronto! Download iniciado.', 'success');
+                setProgress(100);
+
             } catch (err) {
                 setStatus('Erro: ' + err.message, 'error');
                 console.error(err);
